@@ -227,6 +227,9 @@ function inferUrl(downloadBtn) {
   const a = row?.querySelector?.("a[href^='http']");
   if (a && a.href) return a.href;
 
+  const attrUrl = findAnyUrlInAttributes(row);
+  if (attrUrl) return attrUrl;
+
   const urlFromCopy = findUrlNearCopyButton(row);
   if (urlFromCopy) return urlFromCopy;
 
@@ -241,12 +244,26 @@ function inferUrl(downloadBtn) {
   return "";
 }
 
+function findAnyUrlInAttributes(row) {
+  if (!(row instanceof HTMLElement)) return "";
+  const all = Array.from(row.querySelectorAll("*"));
+  all.unshift(row);
+  for (const el of all) {
+    if (!(el instanceof HTMLElement)) continue;
+    for (const attr of Array.from(el.attributes || [])) {
+      const v = (attr?.value || "").trim();
+      if (isHttpUrl(v)) return v;
+    }
+  }
+  return "";
+}
+
 function findUrlNearCopyButton(row) {
   if (!row?.querySelectorAll) return "";
   const btns = Array.from(row.querySelectorAll("button, [role='button'], a"));
   for (const el of btns) {
     if (!(el instanceof HTMLElement)) continue;
-    const label = (el.innerText || "").trim().toLowerCase();
+    const label = getElementLabel(el);
     const isCopy =
       label === "copy url" ||
       label.includes("copy url") ||
@@ -279,7 +296,7 @@ function findCopyUrlButton(row) {
   const btns = Array.from(row.querySelectorAll("button, [role='button'], a"));
   for (const el of btns) {
     if (!(el instanceof HTMLElement)) continue;
-    const label = (el.innerText || "").trim().toLowerCase();
+    const label = getElementLabel(el);
     const isCopy =
       label === "copy url" ||
       label.includes("copy url") ||
@@ -289,6 +306,13 @@ function findCopyUrlButton(row) {
     if (isCopy) return el;
   }
   return null;
+}
+
+function getElementLabel(el) {
+  const text = (el.innerText || "").trim();
+  const aria = (el.getAttribute("aria-label") || "").trim();
+  const title = (el.getAttribute("title") || "").trim();
+  return (text || aria || title).toLowerCase();
 }
 
 function installClipboardCapture() {
