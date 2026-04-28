@@ -4,6 +4,7 @@ import { api } from "/scripts/api.js";
 const captureState = {
   lastClipboardText: "",
   lastClipboardAt: 0,
+  inCopyEvent: false,
 };
 
 installClipboardCapture();
@@ -318,6 +319,37 @@ function getElementLabel(el) {
 function installClipboardCapture() {
   if (window.__serverDownloaderClipboardCaptureInstalled) return;
   window.__serverDownloaderClipboardCaptureInstalled = true;
+
+  document.addEventListener(
+    "copy",
+    () => {
+      captureState.inCopyEvent = true;
+      setTimeout(() => {
+        captureState.inCopyEvent = false;
+      }, 0);
+    },
+    true
+  );
+
+  try {
+    const proto = DataTransfer?.prototype;
+    const originalSetData = proto?.setData;
+    if (proto && typeof originalSetData === "function") {
+      proto.setData = function (format, data) {
+        try {
+          const f = String(format || "").toLowerCase();
+          const d = typeof data === "string" ? data : String(data || "");
+          if (captureState.inCopyEvent && (f.includes("text") || f.includes("plain")) && isHttpUrl(d)) {
+            captureState.lastClipboardText = d.trim();
+            captureState.lastClipboardAt = Date.now();
+          }
+        } catch (e) {
+        }
+        return originalSetData.apply(this, arguments);
+      };
+    }
+  } catch (e) {
+  }
 
   try {
     const clipboard = navigator.clipboard;
