@@ -4,7 +4,7 @@
 
 ## 功能
 
-- **Hook 缺失模型对话框**：自动在 ComfyUI 原生的“缺失模型”弹窗中为每个“Download/下载”按钮旁边添加一个 `Download to Server` 按钮。
+- **Hook 缺失模型对话框**：在“Missing Models/缺失模型”弹窗里为“Download/下载”按钮旁边添加 `Download to Server`。
 - **服务器端下载**：点击按钮后，ComfyUI 后端将直接在服务器上执行下载任务，并将模型保存到对应的目录（如 `models/checkpoints`、`models/loras` 等）。
 - **自动分类**：尝试根据模型名称和上下文自动识别模型类型，并存放到正确的文件夹。
 
@@ -24,10 +24,7 @@
 
 当你在加载工作流发现模型缺失时，ComfyUI 会弹出提示窗口。在本插件的作用下，你会看到除了原有的下载链接外，多出了一个“Download to Server”按钮。点击它，服务器就会开始静默下载。
 
-如果你没看到按钮，先用这个方式确认前端扩展是否加载成功：
-
-- 页面右下角会出现一个浮层 `ServerDownloader: ON`
-- 浏览器控制台会输出 `[ServerDownloader] loaded`
+本插件适配 **独立新版前端 ComfyUI_frontend**：前端扩展文件位于 `web/js/server_downloader.js`，通过 ComfyUI 的扩展加载机制注入到 ComfyUI_frontend。
 
 ## 注意事项
 

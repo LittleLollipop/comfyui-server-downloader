@@ -6,7 +6,7 @@ from server import PromptServer
 import folder_paths
 
 # Define the web directory for JS extensions
-WEB_DIRECTORY = "./web"
+WEB_DIRECTORY = "./web/js"
 
 class ServerDownloader:
     @classmethod
