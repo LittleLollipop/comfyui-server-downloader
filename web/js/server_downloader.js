@@ -1,6 +1,13 @@
 import { app } from "/scripts/app.js";
 import { api } from "/scripts/api.js";
 
+const captureState = {
+  lastClipboardText: "",
+  lastClipboardAt: 0,
+};
+
+installClipboardCapture();
+
 app.registerExtension({
   name: "ComfyUI.ServerDownloader",
   async setup() {
@@ -58,11 +65,10 @@ function maybePatchMissingModelsUI(root) {
       e.stopPropagation();
 
       actionBtn.disabled = true;
-      const originalText = actionBtn.innerText;
       actionBtn.innerText = "Starting...";
 
       try {
-        const url = inferUrl(btn);
+        const url = await inferUrlAsync(btn);
         if (!url) {
           actionBtn.innerText = "No URL";
           actionBtn.disabled = false;
@@ -102,6 +108,37 @@ function maybePatchMissingModelsUI(root) {
 
     btn.insertAdjacentElement("afterend", actionBtn);
   });
+}
+
+async function inferUrlAsync(downloadBtn) {
+  const direct = inferUrl(downloadBtn);
+  if (direct) return direct;
+
+  const row = downloadBtn.closest("tr, li, div") || downloadBtn.parentElement;
+  const copyBtn = findCopyUrlButton(row);
+  if (copyBtn) {
+    const beforeAt = captureState.lastClipboardAt;
+    try {
+      copyBtn.click();
+    } catch (e) {
+    }
+
+    await sleep(0);
+    await sleep(50);
+
+    if (captureState.lastClipboardAt > beforeAt) {
+      const v = captureState.lastClipboardText;
+      if (isHttpUrl(v)) return v;
+    }
+
+    try {
+      const v = await navigator.clipboard.readText();
+      if (isHttpUrl(v)) return v;
+    } catch (e) {
+    }
+  }
+
+  return "";
 }
 
 async function pollStatus(buttonEl, taskId) {
@@ -235,6 +272,51 @@ function findUrlNearCopyButton(row) {
     if (match) return match[0];
   }
   return "";
+}
+
+function findCopyUrlButton(row) {
+  if (!row?.querySelectorAll) return null;
+  const btns = Array.from(row.querySelectorAll("button, [role='button'], a"));
+  for (const el of btns) {
+    if (!(el instanceof HTMLElement)) continue;
+    const label = (el.innerText || "").trim().toLowerCase();
+    const isCopy =
+      label === "copy url" ||
+      label.includes("copy url") ||
+      label === "copy" ||
+      label.includes("copy") ||
+      label.includes("复制");
+    if (isCopy) return el;
+  }
+  return null;
+}
+
+function installClipboardCapture() {
+  if (window.__serverDownloaderClipboardCaptureInstalled) return;
+  window.__serverDownloaderClipboardCaptureInstalled = true;
+
+  try {
+    const clipboard = navigator.clipboard;
+    if (!clipboard || typeof clipboard.writeText !== "function") return;
+    const original = clipboard.writeText.bind(clipboard);
+    clipboard.writeText = async (text) => {
+      try {
+        if (typeof text === "string" && isHttpUrl(text)) {
+          captureState.lastClipboardText = text;
+          captureState.lastClipboardAt = Date.now();
+        }
+      } catch (e) {
+      }
+      return original(text);
+    };
+  } catch (e) {
+  }
+}
+
+function isHttpUrl(v) {
+  if (typeof v !== "string") return false;
+  const s = v.trim();
+  return /^https?:\/\//i.test(s);
 }
 
 function inferFilename(downloadBtn, url) {
