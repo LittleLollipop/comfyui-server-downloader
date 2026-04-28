@@ -62,9 +62,9 @@ function maybePatchMissingModelsUI(root) {
       actionBtn.innerText = "Starting...";
 
       try {
-        const url = inferUrl(btn) || (window.prompt("Model URL?") || "").trim();
+        const url = inferUrl(btn);
         if (!url) {
-          actionBtn.innerText = originalText;
+          actionBtn.innerText = "No URL";
           actionBtn.disabled = false;
           return;
         }
@@ -72,7 +72,6 @@ function maybePatchMissingModelsUI(root) {
         const filename =
           sanitizeFilename(inferFilename(btn, url)) ||
           sanitizeFilename(extractFilenameFromUrl(url)) ||
-          sanitizeFilename(window.prompt("Save as filename?") || "") ||
           "model.safetensors";
 
         const type = inferType(btn);
@@ -83,14 +82,17 @@ function maybePatchMissingModelsUI(root) {
         });
 
         const result = await response.json();
-        if (result.status === "success") {
-          actionBtn.innerText = "Queued";
-          actionBtn.title = result.dest || "";
-        } else {
+        if (result.status !== "success" || !result.task_id) {
           actionBtn.innerText = "Failed";
           actionBtn.disabled = false;
           window.alert(result.message || "Download failed");
+          return;
         }
+
+        actionBtn.dataset.serverDownloaderTaskId = result.task_id;
+        actionBtn.title = result.dest || "";
+        actionBtn.innerText = "0%";
+        pollStatus(actionBtn, result.task_id);
       } catch (err) {
         console.error("[ServerDownloader] error", err);
         actionBtn.innerText = "Error";
@@ -102,15 +104,136 @@ function maybePatchMissingModelsUI(root) {
   });
 }
 
+async function pollStatus(buttonEl, taskId) {
+  const startedAt = Date.now();
+  while (true) {
+    await sleep(600);
+    if (!(buttonEl instanceof HTMLElement)) return;
+
+    try {
+      const resp = await api.fetchApi(`/server_downloader/status/${taskId}`, {
+        method: "GET",
+      });
+      const data = await resp.json();
+      const task = data?.task;
+      if (data?.status !== "success" || !task) {
+        buttonEl.innerText = "Status?";
+        buttonEl.disabled = false;
+        return;
+      }
+
+      const state = task.state;
+      if (state === "completed") {
+        buttonEl.innerText = "Done";
+        buttonEl.disabled = true;
+        return;
+      }
+
+      if (state === "error") {
+        buttonEl.innerText = "Error";
+        buttonEl.title = task.error || "";
+        buttonEl.disabled = false;
+        return;
+      }
+
+      if (state === "cancelled") {
+        buttonEl.innerText = "Cancelled";
+        buttonEl.disabled = false;
+        return;
+      }
+
+      const pct =
+        typeof task.progress === "number"
+          ? Math.max(0, Math.min(1, task.progress))
+          : null;
+      const speed =
+        typeof task.speed_bps === "number" && task.speed_bps > 0
+          ? `${formatBytes(task.speed_bps)}/s`
+          : "";
+
+      if (pct !== null) {
+        buttonEl.innerText = `${Math.round(pct * 100)}%${speed ? " " + speed : ""}`;
+      } else {
+        buttonEl.innerText = `${formatBytes(task.downloaded_bytes || 0)}${speed ? " " + speed : ""}`;
+      }
+
+      if (Date.now() - startedAt > 1000 * 60 * 60) {
+        return;
+      }
+    } catch (e) {
+      buttonEl.innerText = "Offline";
+      buttonEl.disabled = false;
+      return;
+    }
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function formatBytes(bytes) {
+  const n = Number(bytes) || 0;
+  if (n < 1024) return `${n}B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = n;
+  let i = -1;
+  do {
+    value /= 1024;
+    i += 1;
+  } while (value >= 1024 && i < units.length - 1);
+  return `${value.toFixed(value >= 10 ? 0 : 1)}${units[i]}`;
+}
+
 function inferUrl(downloadBtn) {
   const row = downloadBtn.closest("tr, li, div") || downloadBtn.parentElement;
   const a = row?.querySelector?.("a[href^='http']");
   if (a && a.href) return a.href;
 
+  const urlFromCopy = findUrlNearCopyButton(row);
+  if (urlFromCopy) return urlFromCopy;
+
   const onclickStr = downloadBtn.getAttribute("onclick") || "";
   const match = onclickStr.match(/https?:\/\/[^\s'\"]+/i);
   if (match) return match[0];
 
+  const rowText = row ? row.innerText || "" : "";
+  const textMatch = rowText.match(/https?:\/\/[^\s'\"]+/i);
+  if (textMatch) return textMatch[0];
+
+  return "";
+}
+
+function findUrlNearCopyButton(row) {
+  if (!row?.querySelectorAll) return "";
+  const btns = Array.from(row.querySelectorAll("button, [role='button'], a"));
+  for (const el of btns) {
+    if (!(el instanceof HTMLElement)) continue;
+    const label = (el.innerText || "").trim().toLowerCase();
+    const isCopy =
+      label === "copy url" ||
+      label.includes("copy url") ||
+      label === "copy" ||
+      label.includes("copy") ||
+      label.includes("复制");
+    if (!isCopy) continue;
+
+    const attrs = [
+      "data-clipboard-text",
+      "data-url",
+      "data-href",
+      "data-link",
+      "href",
+    ];
+    for (const k of attrs) {
+      const v = el.getAttribute(k);
+      if (v && /^https?:\/\//i.test(v)) return v;
+    }
+
+    const onclickStr = el.getAttribute("onclick") || "";
+    const match = onclickStr.match(/https?:\/\/[^\s'\"]+/i);
+    if (match) return match[0];
+  }
   return "";
 }
 
@@ -160,4 +283,3 @@ function sanitizeFilename(name) {
 
   return base;
 }
-

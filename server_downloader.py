@@ -1,6 +1,8 @@
 import os
 import aiohttp
 import asyncio
+import time
+import uuid
 from aiohttp import web
 from server import PromptServer
 import folder_paths
@@ -29,6 +31,91 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 }
 
 # --- API Endpoints ---
+
+_tasks_lock = asyncio.Lock()
+_tasks = {}
+
+
+def _now() -> float:
+    return time.time()
+
+
+def _format_error(e: Exception) -> str:
+    return f"{type(e).__name__}: {e}"
+
+
+async def _get_task(task_id: str):
+    async with _tasks_lock:
+        return _tasks.get(task_id)
+
+
+async def _set_task(task_id: str, value):
+    async with _tasks_lock:
+        _tasks[task_id] = value
+
+
+async def _update_task(task_id: str, patch: dict):
+    async with _tasks_lock:
+        existing = _tasks.get(task_id)
+        if not existing:
+            return
+        existing.update(patch)
+
+
+async def _delete_task(task_id: str):
+    async with _tasks_lock:
+        _tasks.pop(task_id, None)
+
+
+async def _download_worker(task_id: str):
+    task = await _get_task(task_id)
+    if not task:
+        return
+
+    url = task["url"]
+    dest_path = task["dest_path"]
+    tmp_path = dest_path + ".part"
+
+    await _update_task(task_id, {"status": "downloading", "started_at": _now()})
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=60)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url) as response:
+                if response.status != 200:
+                    await _update_task(task_id, {"status": "error", "error": f"HTTP {response.status}"})
+                    return
+
+                total = response.headers.get("Content-Length")
+                total_bytes = int(total) if total and total.isdigit() else None
+                await _update_task(task_id, {"total_bytes": total_bytes})
+
+                downloaded = 0
+                with open(tmp_path, "wb") as f:
+                    async for chunk in response.content.iter_chunked(1024 * 1024):
+                        if not chunk:
+                            continue
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        await _update_task(task_id, {"downloaded_bytes": downloaded, "updated_at": _now()})
+
+        os.replace(tmp_path, dest_path)
+        await _update_task(task_id, {"status": "completed", "completed_at": _now()})
+    except asyncio.CancelledError:
+        await _update_task(task_id, {"status": "cancelled", "completed_at": _now()})
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+        raise
+    except Exception as e:
+        await _update_task(task_id, {"status": "error", "error": _format_error(e), "completed_at": _now()})
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
 
 @PromptServer.instance.routes.post("/server_downloader/download")
 async def handle_download(request):
@@ -63,31 +150,86 @@ async def handle_download(request):
         # For simplicity in this version, we'll wait for the download to start and return a task ID or success
         # But a real implementation should probably use a background task manager.
         
-        async def download_task():
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url) as response:
-                    if response.status == 200:
-                        with open(dest_path, 'wb') as f:
-                            while True:
-                                chunk = await response.content.read(1024*1024) # 1MB chunks
-                                if not chunk:
-                                    break
-                                f.write(chunk)
-                        print(f"[ServerDownloader] Finished downloading {filename} to {dest_path}")
-                    else:
-                        print(f"[ServerDownloader] Failed to download {url}, status: {response.status}")
+        task_id = uuid.uuid4().hex
+        created_at = _now()
 
-        # Fire and forget for now, or we could track it.
-        asyncio.create_task(download_task())
+        task_record = {
+            "id": task_id,
+            "status": "queued",
+            "url": url,
+            "filename": safe_name,
+            "type": model_type,
+            "dest_path": dest_path,
+            "created_at": created_at,
+            "started_at": None,
+            "updated_at": created_at,
+            "completed_at": None,
+            "downloaded_bytes": 0,
+            "total_bytes": None,
+            "error": None,
+            "asyncio_task": None,
+        }
+
+        await _set_task(task_id, task_record)
+        aio_task = asyncio.create_task(_download_worker(task_id))
+        await _update_task(task_id, {"asyncio_task": aio_task})
 
         return web.json_response({
-            "status": "success", 
-            "message": f"Download started for {filename}",
-            "dest": dest_path
+            "status": "success",
+            "task_id": task_id,
+            "dest": dest_path,
         })
 
     except Exception as e:
         return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+
+@PromptServer.instance.routes.get("/server_downloader/status/{task_id}")
+async def get_status(request):
+    task_id = request.match_info.get("task_id")
+    task = await _get_task(task_id)
+    if not task:
+        return web.json_response({"status": "error", "message": "Task not found"}, status=404)
+
+    started_at = task.get("started_at")
+    now = _now()
+    downloaded = int(task.get("downloaded_bytes") or 0)
+    total = task.get("total_bytes")
+
+    elapsed = max(0.001, (now - started_at)) if started_at else None
+    speed_bps = (downloaded / elapsed) if elapsed else None
+    progress = (downloaded / total) if total and total > 0 else None
+
+    return web.json_response({
+        "status": "success",
+        "task": {
+            "id": task.get("id"),
+            "state": task.get("status"),
+            "filename": task.get("filename"),
+            "type": task.get("type"),
+            "dest": task.get("dest_path"),
+            "downloaded_bytes": downloaded,
+            "total_bytes": total,
+            "progress": progress,
+            "speed_bps": speed_bps,
+            "error": task.get("error"),
+        },
+    })
+
+
+@PromptServer.instance.routes.post("/server_downloader/cancel/{task_id}")
+async def cancel_task(request):
+    task_id = request.match_info.get("task_id")
+    task = await _get_task(task_id)
+    if not task:
+        return web.json_response({"status": "error", "message": "Task not found"}, status=404)
+
+    aio_task = task.get("asyncio_task")
+    if aio_task and not aio_task.done():
+        aio_task.cancel()
+        return web.json_response({"status": "success", "message": "Cancel requested"})
+
+    return web.json_response({"status": "success", "message": "Task already finished"})
 
 @PromptServer.instance.routes.get("/server_downloader/check_path")
 async def check_path(request):
