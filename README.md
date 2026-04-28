@@ -18,15 +18,16 @@
    ```bash
    git clone https://github.com/your-repo/comfyui-server-downloader.git
    ```
-3. 安装依赖（可选，ComfyUI 通常已内置 aiohttp）：
-   ```bash
-   pip install -r requirements.txt
-   ```
-4. 重启 ComfyUI。
+3. 重启 ComfyUI。
 
 ## 使用说明
 
 当你在加载工作流发现模型缺失时，ComfyUI 会弹出提示窗口。在本插件的作用下，你会看到除了原有的下载链接外，多出了一个“Download to Server”按钮。点击它，服务器就会开始静默下载。
+
+如果你没看到按钮，先用这个方式确认前端扩展是否加载成功：
+
+- 页面右下角会出现一个浮层 `ServerDownloader: ON`
+- 浏览器控制台会输出 `[ServerDownloader] loaded`
 
 ## 注意事项
 

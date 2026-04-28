@@ -1,11 +1,48 @@
-import { app } from "../../scripts/app.js";
-import { api } from "../../scripts/api.js";
+const state = {
+  fetchApi: null,
+  loadedAt: Date.now(),
+};
 
-app.registerExtension({
-  name: "ComfyUI.ServerDownloader",
-  async setup() {
-    console.log("[ServerDownloader] loaded");
+init();
 
+async function init() {
+  let app = null;
+  let api = null;
+
+  try {
+    ({ app } = await import("../../scripts/app.js"));
+  } catch (e) {
+    app = null;
+  }
+
+  try {
+    ({ api } = await import("../../scripts/api.js"));
+  } catch (e) {
+    api = null;
+  }
+
+  state.fetchApi = api?.fetchApi
+    ? api.fetchApi.bind(api)
+    : async (path, options = {}) => {
+        const headers = new Headers(options.headers || {});
+        if (!headers.has("Content-Type")) {
+          headers.set("Content-Type", "application/json");
+        }
+        return fetch(path, { ...options, headers });
+      };
+
+  console.log("[ServerDownloader] loaded", {
+    hasApp: !!app,
+    hasApi: !!api,
+    href: location.href,
+  });
+
+  mountBadge();
+  startHooking(app);
+}
+
+function startHooking(app) {
+  const install = () => {
     const tryProcess = (root) => {
       if (!(root instanceof HTMLElement)) return;
       const text = (root.innerText || "").toLowerCase();
@@ -26,8 +63,20 @@ app.registerExtension({
 
     observer.observe(document.body, { childList: true, subtree: true });
     tryProcess(document.body);
-  },
-});
+    installGlobalClickCapture();
+  };
+
+  if (app?.registerExtension) {
+    app.registerExtension({
+      name: "ComfyUI.ServerDownloader",
+      async setup() {
+        install();
+      },
+    });
+  } else {
+    install();
+  }
+}
 
 function processMissingModelsContainer(container) {
   const candidates = container.querySelectorAll(
@@ -47,6 +96,7 @@ function processMissingModelsContainer(container) {
     if (!isDownload) return;
 
     el.dataset.serverDownloaderHooked = "1";
+    el.dataset.serverDownloaderAutoIntercept = "1";
 
     const btn = document.createElement("button");
     btn.type = "button";
@@ -79,7 +129,7 @@ function processMissingModelsContainer(container) {
           sanitizeFilename(window.prompt("Save as filename?") || "") ||
           "model.safetensors";
 
-        const response = await api.fetchApi("/server_downloader/download", {
+        const response = await state.fetchApi("/server_downloader/download", {
           method: "POST",
           body: JSON.stringify({
             url: finalUrl,
@@ -187,3 +237,94 @@ function sanitizeFilename(name) {
   return base;
 }
 
+function mountBadge() {
+  if (document.getElementById("server-downloader-badge")) return;
+
+  const el = document.createElement("div");
+  el.id = "server-downloader-badge";
+  el.style.position = "fixed";
+  el.style.right = "12px";
+  el.style.bottom = "12px";
+  el.style.zIndex = "2147483647";
+  el.style.padding = "6px 10px";
+  el.style.borderRadius = "8px";
+  el.style.background = "rgba(0,0,0,0.65)";
+  el.style.color = "#fff";
+  el.style.fontSize = "12px";
+  el.style.userSelect = "none";
+  el.style.cursor = "pointer";
+  el.textContent = "ServerDownloader: ON";
+
+  el.addEventListener("click", async () => {
+    const url = window.prompt("Model URL?") || "";
+    if (!url) return;
+    const filename =
+      sanitizeFilename(window.prompt("Save as filename?") || "") ||
+      sanitizeFilename(extractFilenameFromUrl(url)) ||
+      "model.safetensors";
+    const type = window.prompt("Model type? (checkpoints/loras/controlnet/vae)") || "checkpoints";
+
+    try {
+      const resp = await state.fetchApi("/server_downloader/download", {
+        method: "POST",
+        body: JSON.stringify({ url, filename, type }),
+      });
+      const result = await resp.json();
+      window.alert(result.status === "success" ? "Queued" : result.message || "Failed");
+    } catch (e) {
+      window.alert("Request failed");
+    }
+  });
+
+  document.body.appendChild(el);
+}
+
+function installGlobalClickCapture() {
+  if (window.__serverDownloaderCaptureInstalled) return;
+  window.__serverDownloaderCaptureInstalled = true;
+
+  document.addEventListener(
+    "click",
+    (e) => {
+      const target = e.target instanceof HTMLElement ? e.target : null;
+      if (!target) return;
+
+      const clickable = target.closest("a, button, [role='button']");
+      if (!(clickable instanceof HTMLElement)) return;
+
+      const label = (clickable.innerText || "").trim().toLowerCase();
+      const isDownloadish =
+        label === "download" ||
+        label.includes("download") ||
+        label === "下载" ||
+        label.includes("下载");
+      if (!isDownloadish) return;
+
+      const url = inferUrl(clickable);
+      if (!url) return;
+
+      if (clickable.dataset.serverDownloaderAutoIntercept !== "1") return;
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      const filename =
+        sanitizeFilename(inferFilename(clickable, url)) ||
+        sanitizeFilename(extractFilenameFromUrl(url)) ||
+        "model.safetensors";
+      const type = inferType(clickable);
+
+      state
+        .fetchApi("/server_downloader/download", {
+          method: "POST",
+          body: JSON.stringify({ url, filename, type }),
+        })
+        .then((r) => r.json())
+        .then((result) => {
+          console.log("[ServerDownloader] intercepted", result);
+        })
+        .catch((err) => console.error("[ServerDownloader] intercept error", err));
+    },
+    true
+  );
+}
