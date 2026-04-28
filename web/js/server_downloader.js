@@ -352,6 +352,75 @@ function installClipboardCapture() {
   }
 
   try {
+    const originalExecCommand = document.execCommand?.bind(document);
+    if (typeof originalExecCommand === "function") {
+      document.execCommand = function (commandId) {
+        try {
+          const cmd = String(commandId || "").toLowerCase();
+          if (cmd === "copy") {
+            const ae = document.activeElement;
+            const v = ae && typeof ae.value === "string" ? ae.value : "";
+            if (isHttpUrl(v)) {
+              captureState.lastClipboardText = v.trim();
+              captureState.lastClipboardAt = Date.now();
+            }
+
+            try {
+              const sel = window.getSelection?.();
+              const s = sel ? String(sel.toString() || "").trim() : "";
+              if (isHttpUrl(s)) {
+                captureState.lastClipboardText = s;
+                captureState.lastClipboardAt = Date.now();
+              }
+            } catch (e) {
+            }
+          }
+        } catch (e) {
+        }
+
+        return originalExecCommand.apply(this, arguments);
+      };
+    }
+  } catch (e) {
+  }
+
+  try {
+    const taProto = HTMLTextAreaElement?.prototype;
+    const inProto = HTMLInputElement?.prototype;
+    const originalTaSelect = taProto?.select;
+    const originalInSelect = inProto?.select;
+
+    if (taProto && typeof originalTaSelect === "function") {
+      taProto.select = function () {
+        try {
+          const v = typeof this.value === "string" ? this.value : "";
+          if (isHttpUrl(v)) {
+            captureState.lastClipboardText = v.trim();
+            captureState.lastClipboardAt = Date.now();
+          }
+        } catch (e) {
+        }
+        return originalTaSelect.apply(this, arguments);
+      };
+    }
+
+    if (inProto && typeof originalInSelect === "function") {
+      inProto.select = function () {
+        try {
+          const v = typeof this.value === "string" ? this.value : "";
+          if (isHttpUrl(v)) {
+            captureState.lastClipboardText = v.trim();
+            captureState.lastClipboardAt = Date.now();
+          }
+        } catch (e) {
+        }
+        return originalInSelect.apply(this, arguments);
+      };
+    }
+  } catch (e) {
+  }
+
+  try {
     const clipboard = navigator.clipboard;
     if (!clipboard || typeof clipboard.writeText !== "function") return;
     const original = clipboard.writeText.bind(clipboard);
