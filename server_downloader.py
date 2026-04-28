@@ -1,13 +1,12 @@
 import os
 import aiohttp
-import json
 import asyncio
 from aiohttp import web
 from server import PromptServer
 import folder_paths
 
 # Define the web directory for JS extensions
-WEB_DIRECTORY = "./js"
+WEB_DIRECTORY = "./web"
 
 class ServerDownloader:
     @classmethod
@@ -42,24 +41,23 @@ async def handle_download(request):
         if not url:
             return web.json_response({"status": "error", "message": "No URL provided"}, status=400)
 
-        # Determine target directory
-        # model_type should correspond to ComfyUI's folder names (checkpoints, loras, etc.)
+        if not isinstance(filename, str) or not filename.strip():
+            return web.json_response({"status": "error", "message": "No filename provided"}, status=400)
+
+        safe_name = os.path.basename(filename.strip())
+        if safe_name != filename.strip() or ".." in safe_name:
+            return web.json_response({"status": "error", "message": "Invalid filename"}, status=400)
+
         try:
-            target_dir = folder_paths.get_output_directory() # Fallback
-            # Try to get the actual model path
             possible_paths = folder_paths.get_folder_paths(model_type)
-            if possible_paths:
-                target_dir = possible_paths[0]
-            else:
-                # If folder_paths doesn't know it, use a generic models path or checkpoints
-                target_dir = os.path.join(folder_paths.models_dir, model_type)
+            target_dir = possible_paths[0] if possible_paths else os.path.join(folder_paths.models_dir, model_type)
         except Exception:
             target_dir = os.path.join(folder_paths.models_dir, "checkpoints")
 
         if not os.path.exists(target_dir):
             os.makedirs(target_dir, exist_ok=True)
 
-        dest_path = os.path.join(target_dir, filename)
+        dest_path = os.path.join(target_dir, safe_name)
 
         # Start download in background or wait? 
         # For simplicity in this version, we'll wait for the download to start and return a task ID or success
