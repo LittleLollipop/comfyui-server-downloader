@@ -1,25 +1,78 @@
 import { app } from "/scripts/app.js";
 import { api } from "/scripts/api.js";
 
-// ---- 剪贴板捕获状态 ----
 const captureState = {
   lastClipboardText: "",
   lastClipboardAt: 0,
   inCopyEvent: false,
 };
 
-// 模型类型配置（label → ComfyUI folder_paths key）
-const MODEL_TYPES = [
-  { value: "checkpoints",    label: "Checkpoint (checkpoints)" },
-  { value: "loras",          label: "LoRA (loras)" },
-  { value: "controlnet",     label: "ControlNet (controlnet)" },
-  { value: "vae",            label: "VAE (vae)" },
-  { value: "upscale_models", label: "Upscale (upscale_models)" },
-  { value: "embeddings",     label: "Embedding (embeddings)" },
-  { value: "clip",           label: "CLIP (clip)" },
-  { value: "unet",           label: "UNet (unet)" },
-  { value: "diffusion_models", label: "Diffusion Models (diffusion_models)" },
-];
+// ---- i18n Strings (English) ----
+const i18n = {
+  // Logs
+  logFetchTypesFailed: "[ServerDownloader] Failed to fetch model types, using fallback list",
+
+  // Button states
+  btnDownload: "⬇ Server Download",
+  btnDetecting: "Detecting...",
+  btnSubmitting: "Submitting...",
+  btnError: "Error",
+  btnDone: "✅ Done",
+  btnFailed: "❌ Failed",
+  btnCancelled: "Cancelled",
+  btnOffline: "Offline",
+  btnStatusError: "Status Error",
+
+  // Dialog
+  dialogTitle: "📥 Download Model to Server",
+  dialogUrlLabel: "Download URL *",
+  dialogFilenameLabel: "Save Filename *",
+  dialogTypeLabel: "Model Type (determines save directory) *",
+  dialogTypeHint: "Select model type, corresponds to directory under ComfyUI/models/",
+  dialogCustomTypeOption: "➕ Enter custom type...",
+  dialogCustomTypePlaceholder: "Enter custom type name (directory name under models/)",
+  dialogSaveLocation: "Save to: ",
+  dialogCancel: "Cancel",
+  dialogStartDownload: "Start Download",
+
+  // Errors
+  errorDownloadFailed: "Download failed: ",
+  errorUnknown: "Unknown error",
+  errorInvalidUrl: "⚠ Please enter a valid http/https download URL",
+  errorEmptyFilename: "⚠ Filename cannot be empty",
+  errorEmptyCustomType: "⚠ Please enter a custom type name",
+  errorTaskError: "Error: ",
+
+  // URL placeholder
+  urlPlaceholder: "https://huggingface.co/... or https://civitai.com/...",
+  filenamePlaceholder: "model.safetensors",
+};
+
+// ---- Model type cache (dynamically fetched from backend) ----
+let _cachedTypes = null;
+let _cachedModelsDir = "";
+
+async function getModelTypes() {
+  if (_cachedTypes) return _cachedTypes;
+  try {
+    const resp = await api.fetchApi("/server_downloader/list_types");
+    const data = await resp.json();
+    if (data.status === "success" && Array.isArray(data.types)) {
+      _cachedTypes = data.types;
+      _cachedModelsDir = data.models_dir || "";
+    }
+  } catch (e) {
+    console.warn(i18n.logFetchTypesFailed, e);
+  }
+  if (!_cachedTypes) {
+    // Fallback list
+    _cachedTypes = [
+      "checkpoints", "loras", "controlnet", "vae",
+      "upscale_models", "embeddings", "clip", "unet", "diffusion_models",
+    ];
+  }
+  return _cachedTypes;
+}
 
 installClipboardCapture();
 
@@ -27,6 +80,8 @@ app.registerExtension({
   name: "ComfyUI.ServerDownloader",
   async setup() {
     console.log("[ServerDownloader] loaded");
+    // Pre-fetch type list so next dialog open doesn't have to wait
+    getModelTypes().catch(() => {});
 
     const observer = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
@@ -42,7 +97,7 @@ app.registerExtension({
   },
 });
 
-// ---- 注入「服务端下载」按钮 ----
+// ---- Inject "Server Download" button ----
 function maybePatchMissingModelsUI(root) {
   const text = (root.innerText || "").toLowerCase();
   if (
@@ -70,7 +125,7 @@ function maybePatchMissingModelsUI(root) {
 
     const actionBtn = document.createElement("button");
     actionBtn.type = "button";
-    actionBtn.innerText = "⬇ 服务端下载";
+    actionBtn.innerText = i18n.btnDownload;
     actionBtn.style.cssText = [
       "margin-left:8px",
       "padding:3px 10px",
@@ -95,10 +150,9 @@ function maybePatchMissingModelsUI(root) {
       e.stopPropagation();
 
       actionBtn.disabled = true;
-      actionBtn.innerText = "检测中…";
+      actionBtn.innerText = i18n.btnDetecting;
 
       try {
-        // 尝试自动推断 URL、文件名、类型作为预填充值
         const autoUrl = await inferUrlAsync(btn);
         const autoFilename = autoUrl
           ? sanitizeFilename(inferFilename(btn, autoUrl)) ||
@@ -107,7 +161,6 @@ function maybePatchMissingModelsUI(root) {
           : "";
         const autoType = inferTypeFromDOM(btn);
 
-        // 读取剪贴板作为 URL 候选（若自动推断为空）
         let clipboardHint = autoUrl;
         if (!clipboardHint) {
           try {
@@ -116,21 +169,19 @@ function maybePatchMissingModelsUI(root) {
           } catch (_) {}
         }
 
-        // 弹出确认对话框（URL + 文件名 + 类型三合一）
         const result = await promptDownloadDialog({
           defaultUrl: clipboardHint || "",
-          defaultFilename: autoFilename || "model.safetensors",
+          defaultFilename: autoFilename || i18n.filenamePlaceholder,
           defaultType: autoType || "checkpoints",
         });
 
         if (!result) {
-          // 用户取消
-          actionBtn.innerText = "⬇ 服务端下载";
+          actionBtn.innerText = i18n.btnDownload;
           actionBtn.disabled = false;
           return;
         }
 
-        actionBtn.innerText = "提交中…";
+        actionBtn.innerText = i18n.btnSubmitting;
 
         const resp = await api.fetchApi("/server_downloader/download", {
           method: "POST",
@@ -143,19 +194,19 @@ function maybePatchMissingModelsUI(root) {
 
         const data = await resp.json();
         if (data.status !== "success" || !data.task_id) {
-          actionBtn.innerText = "⬇ 服务端下载";
+          actionBtn.innerText = i18n.btnDownload;
           actionBtn.disabled = false;
-          window.alert("下载失败：" + (data.message || "未知错误"));
+          window.alert(i18n.errorDownloadFailed + (data.message || i18n.errorUnknown));
           return;
         }
 
         actionBtn.dataset.serverDownloaderTaskId = data.task_id;
-        actionBtn.title = "保存到：" + (data.dest || "");
+        actionBtn.title = i18n.dialogSaveLocation + (data.dest || "");
         actionBtn.innerText = "0%";
         pollStatus(actionBtn, data.task_id);
       } catch (err) {
         console.error("[ServerDownloader] error", err);
-        actionBtn.innerText = "错误";
+        actionBtn.innerText = i18n.btnError;
         actionBtn.disabled = false;
       }
     });
@@ -164,8 +215,11 @@ function maybePatchMissingModelsUI(root) {
   });
 }
 
-// ---- 下载确认对话框（URL + 文件名 + 类型三合一） ----
-function promptDownloadDialog({ defaultUrl, defaultFilename, defaultType }) {
+// ---- Download confirmation dialog (dynamic types + custom type) ----
+async function promptDownloadDialog({ defaultUrl, defaultFilename, defaultType }) {
+  // Fetch latest type list first (prefer cache)
+  const typesList = await getModelTypes();
+
   return new Promise((resolve) => {
     const overlay = buildOverlay();
 
@@ -174,29 +228,18 @@ function promptDownloadDialog({ defaultUrl, defaultFilename, defaultType }) {
       "background:#2a2a2a",
       "border-radius:8px",
       "padding:24px",
-      "width:500px",
+      "width:520px",
       "max-width:94vw",
+      "max-height:90vh",
+      "overflow-y:auto",
       "box-shadow:0 4px 28px rgba(0,0,0,0.6)",
       "font-family:sans-serif",
       "color:#eee",
     ].join(";");
 
-    // 标题
     const title = document.createElement("div");
-    title.innerText = "📥 服务端下载模型";
+    title.innerText = i18n.dialogTitle;
     title.style.cssText = "font-size:16px;font-weight:700;margin-bottom:18px;color:#fff;";
-
-    // 通用 label + control 行
-    function makeRow(labelText, control) {
-      const row = document.createElement("div");
-      row.style.cssText = "margin-bottom:14px;";
-      const lbl = document.createElement("div");
-      lbl.innerText = labelText;
-      lbl.style.cssText = "font-size:12px;color:#aaa;margin-bottom:5px;";
-      row.appendChild(lbl);
-      row.appendChild(control);
-      return row;
-    }
 
     const inputStyle = [
       "width:100%",
@@ -210,76 +253,159 @@ function promptDownloadDialog({ defaultUrl, defaultFilename, defaultType }) {
       "outline:none",
     ].join(";");
 
-    // URL 输入
+    function makeRow(labelText, control) {
+      const row = document.createElement("div");
+      row.style.cssText = "margin-bottom:14px;";
+      const lbl = document.createElement("div");
+      lbl.innerText = labelText;
+      lbl.style.cssText = "font-size:12px;color:#aaa;margin-bottom:5px;";
+      row.appendChild(lbl);
+      row.appendChild(control);
+      return row;
+    }
+
+    // URL input
     const urlInput = document.createElement("input");
     urlInput.type = "text";
     urlInput.value = defaultUrl || "";
-    urlInput.placeholder = "https://huggingface.co/... 或 https://civitai.com/...";
+    urlInput.placeholder = i18n.urlPlaceholder;
     urlInput.style.cssText = inputStyle;
-
-    // URL 变化时自动填充文件名
     urlInput.addEventListener("input", () => {
       const v = urlInput.value.trim();
       if (isHttpUrl(v)) {
         const fn = sanitizeFilename(extractFilenameFromUrl(v));
-        if (fn) filenameInput.value = fn;
+        if (fn && !filenameInput.value.trim()) filenameInput.value = fn;
       }
     });
 
-    // 文件名输入
+    // Filename input
     const filenameInput = document.createElement("input");
     filenameInput.type = "text";
-    filenameInput.value = defaultFilename || "model.safetensors";
-    filenameInput.placeholder = "model.safetensors";
+    filenameInput.value = defaultFilename || i18n.filenamePlaceholder;
+    filenameInput.placeholder = i18n.filenamePlaceholder;
     filenameInput.style.cssText = inputStyle;
 
-    // 模型类型下拉
+    // ---- Type selection area ----
+    const typeRow = document.createElement("div");
+    typeRow.style.cssText = "margin-bottom:14px;";
+
+    const typeLabel = document.createElement("div");
+    typeLabel.innerText = i18n.dialogTypeLabel;
+    typeLabel.style.cssText = "font-size:12px;color:#aaa;margin-bottom:5px;";
+    typeRow.appendChild(typeLabel);
+
+    // Type dropdown
     const typeSelect = document.createElement("select");
-    typeSelect.style.cssText = [
-      inputStyle,
-      "cursor:pointer",
-    ].join(";");
-    MODEL_TYPES.forEach(({ value, label }) => {
+    typeSelect.style.cssText = inputStyle + ";cursor:pointer;margin-bottom:6px;";
+    typeSelect.title = i18n.dialogTypeHint;
+
+    // Sort alphabetically, put default at top
+    const sortedTypes = [...typesList].sort();
+    // Put defaultType first
+    const preferred = defaultType && sortedTypes.includes(defaultType)
+      ? defaultType
+      : sortedTypes.includes("checkpoints")
+        ? "checkpoints"
+        : sortedTypes[0];
+    const ordered = preferred
+      ? [preferred, ...sortedTypes.filter((t) => t !== preferred)]
+      : sortedTypes;
+
+    ordered.forEach((t) => {
       const opt = document.createElement("option");
-      opt.value = value;
-      opt.text = label;
-      if (value === defaultType) opt.selected = true;
+      opt.value = t;
+      opt.text = t;
       typeSelect.appendChild(opt);
     });
 
-    // 错误提示
-    const errMsg = document.createElement("div");
-    errMsg.style.cssText =
-      "color:#f44336;font-size:12px;min-height:18px;margin-bottom:6px;";
+    // "Custom type" option
+    const customOpt = document.createElement("option");
+    customOpt.value = "__custom__";
+    customOpt.text = i18n.dialogCustomTypeOption;
+    typeSelect.appendChild(customOpt);
 
-    // 按钮行
+    // Custom type input (hidden by default)
+    const customInput = document.createElement("input");
+    customInput.type = "text";
+    customInput.placeholder = i18n.dialogCustomTypePlaceholder;
+    customInput.style.cssText = inputStyle + ";display:none;";
+
+    typeSelect.addEventListener("change", () => {
+      if (typeSelect.value === "__custom__") {
+        customInput.style.display = "";
+        customInput.focus();
+      } else {
+        customInput.style.display = "none";
+        customInput.value = "";
+      }
+    });
+
+    typeRow.appendChild(typeSelect);
+    typeRow.appendChild(customInput);
+
+    // Full path preview (updates in real time with selection)
+    const pathPreview = document.createElement("div");
+    pathPreview.style.cssText = "font-size:11px;color:#666;margin-top:4px;";
+    function updatePathPreview() {
+      let t = typeSelect.value;
+      if (t === "__custom__") t = customInput.value.trim();
+      if (t && _cachedModelsDir) {
+        pathPreview.innerText = i18n.dialogSaveLocation + _cachedModelsDir + "/" + t;
+      } else {
+        pathPreview.innerText = "";
+      }
+    }
+    typeSelect.addEventListener("change", updatePathPreview);
+    customInput.addEventListener("input", updatePathPreview);
+    // Initialize preview
+    setTimeout(updatePathPreview, 0);
+
+    typeRow.appendChild(pathPreview);
+
+    // Error message
+    const errMsg = document.createElement("div");
+    errMsg.style.cssText = "color:#f44336;font-size:12px;min-height:18px;margin-bottom:6px;";
+
+    // Button row
     const btnRow = document.createElement("div");
     btnRow.style.cssText = "display:flex;justify-content:flex-end;gap:10px;margin-top:6px;";
 
     const cancelBtn = document.createElement("button");
-    cancelBtn.innerText = "取消";
+    cancelBtn.innerText = i18n.dialogCancel;
     cancelBtn.style.cssText =
       "padding:7px 18px;font-size:13px;border-radius:4px;border:1px solid #555;background:transparent;color:#ccc;cursor:pointer;";
 
     const okBtn = document.createElement("button");
-    okBtn.innerText = "开始下载";
+    okBtn.innerText = i18n.dialogStartDownload;
     okBtn.style.cssText =
       "padding:7px 18px;font-size:13px;border-radius:4px;border:none;background:#1a73e8;color:#fff;cursor:pointer;font-weight:600;";
 
     function doConfirm() {
-      const url = urlInput.value.trim();
-      const filename = sanitizeFilename(filenameInput.value.trim());
-      const type = typeSelect.value;
+      errMsg.innerText = "";
 
+      const url = urlInput.value.trim();
       if (!isHttpUrl(url)) {
-        errMsg.innerText = "⚠ 请输入有效的 http/https 链接";
+        errMsg.innerText = i18n.errorInvalidUrl;
         urlInput.focus();
         return;
       }
+
+      const filename = sanitizeFilename(filenameInput.value.trim());
       if (!filename) {
-        errMsg.innerText = "⚠ 文件名不能为空";
+        errMsg.innerText = i18n.errorEmptyFilename;
         filenameInput.focus();
         return;
+      }
+
+      let type = typeSelect.value;
+      if (type === "__custom__") {
+        const customVal = customInput.value.trim();
+        if (!customVal) {
+          errMsg.innerText = i18n.errorEmptyCustomType;
+          customInput.focus();
+          return;
+        }
+        type = customVal;
       }
 
       document.body.removeChild(overlay);
@@ -293,8 +419,6 @@ function promptDownloadDialog({ defaultUrl, defaultFilename, defaultType }) {
 
     okBtn.addEventListener("click", doConfirm);
     cancelBtn.addEventListener("click", doCancel);
-
-    // 键盘快捷键
     overlay.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && e.target !== cancelBtn) doConfirm();
       if (e.key === "Escape") doCancel();
@@ -304,9 +428,9 @@ function promptDownloadDialog({ defaultUrl, defaultFilename, defaultType }) {
     btnRow.appendChild(okBtn);
 
     box.appendChild(title);
-    box.appendChild(makeRow("下载链接 *", urlInput));
-    box.appendChild(makeRow("保存文件名 *", filenameInput));
-    box.appendChild(makeRow("模型类型（决定保存目录）*", typeSelect));
+    box.appendChild(makeRow(i18n.dialogUrlLabel, urlInput));
+    box.appendChild(makeRow(i18n.dialogFilenameLabel, filenameInput));
+    box.appendChild(typeRow);
     box.appendChild(errMsg);
     box.appendChild(btnRow);
 
@@ -324,7 +448,7 @@ function promptDownloadDialog({ defaultUrl, defaultFilename, defaultType }) {
   });
 }
 
-// ---- 状态轮询 ----
+// ---- Status polling ----
 async function pollStatus(buttonEl, taskId) {
   const startedAt = Date.now();
   while (true) {
@@ -338,29 +462,29 @@ async function pollStatus(buttonEl, taskId) {
       const data = await resp.json();
       const task = data?.task;
       if (data?.status !== "success" || !task) {
-        buttonEl.innerText = "状态异常";
+        buttonEl.innerText = i18n.btnStatusError;
         buttonEl.disabled = false;
         return;
       }
 
       const state = task.state;
       if (state === "completed") {
-        buttonEl.innerText = "✅ 完成";
+        buttonEl.innerText = i18n.btnDone;
         buttonEl.style.background = "#2e7d32";
         buttonEl.disabled = true;
         return;
       }
 
       if (state === "error") {
-        buttonEl.innerText = "❌ 错误";
+        buttonEl.innerText = i18n.btnFailed;
         buttonEl.style.background = "#c62828";
-        buttonEl.title = "错误：" + (task.error || "未知");
+        buttonEl.title = i18n.errorTaskError + (task.error || i18n.errorUnknown);
         buttonEl.disabled = false;
         return;
       }
 
       if (state === "cancelled") {
-        buttonEl.innerText = "已取消";
+        buttonEl.innerText = i18n.btnCancelled;
         buttonEl.disabled = false;
         return;
       }
@@ -381,14 +505,14 @@ async function pollStatus(buttonEl, taskId) {
 
       if (Date.now() - startedAt > 1000 * 60 * 60) return;
     } catch (e) {
-      buttonEl.innerText = "离线";
+      buttonEl.innerText = i18n.btnOffline;
       buttonEl.disabled = false;
       return;
     }
   }
 }
 
-// ---- 工具函数 ----
+// ---- Utility functions ----
 
 function buildOverlay() {
   const overlay = document.createElement("div");
@@ -545,17 +669,11 @@ function inferFilename(downloadBtn, url) {
   return "";
 }
 
-/**
- * 从 DOM 推断模型类型，仅作为默认值，用户可在对话框里修改。
- * 为避免从大容器取到混杂文本，先向上找最近的包含具体类型词的祖先节点。
- */
 function inferTypeFromDOM(downloadBtn) {
-  // 优先逐级向上查找，取能精确匹配类型关键词的最小容器
   let el = downloadBtn.parentElement;
   while (el && el !== document.body) {
     const t = (el.innerText || "").toLowerCase();
-    // 判断范围：文字量小的容器优先（< 200字符），避免取到全局容器
-    if (t.length < 200) {
+    if (t.length < 300) {
       if (t.includes("lora")) return "loras";
       if (t.includes("controlnet")) return "controlnet";
       if (t.includes("vae") && !t.includes("checkpoint")) return "vae";
@@ -588,19 +706,25 @@ function sanitizeFilename(name) {
   if (!trimmed) return "";
   const base = trimmed.split("/").pop()?.split("\\").pop() || "";
   if (!base || base.includes("..")) return "";
-  // 黑名单过滤非法字符
-  return base.replace(/[/\\:*?"<>|]/g, "_");
+  return base.replace(/[\/\\:*?"<>|]/g, "_");
 }
 
-// ---- 剪贴板劫持（用于捕获 copy 事件里的 URL） ----
+// ---- Clipboard capture ----
+
 function installClipboardCapture() {
   if (window.__serverDownloaderClipboardCaptureInstalled) return;
   window.__serverDownloaderClipboardCaptureInstalled = true;
 
-  document.addEventListener("copy", () => {
-    captureState.inCopyEvent = true;
-    setTimeout(() => { captureState.inCopyEvent = false; }, 0);
-  }, true);
+  document.addEventListener(
+    "copy",
+    () => {
+      captureState.inCopyEvent = true;
+      setTimeout(() => {
+        captureState.inCopyEvent = false;
+      }, 0);
+    },
+    true
+  );
 
   try {
     const proto = DataTransfer?.prototype;
@@ -610,7 +734,11 @@ function installClipboardCapture() {
         try {
           const f = String(format || "").toLowerCase();
           const d = typeof data === "string" ? data : String(data || "");
-          if (captureState.inCopyEvent && (f.includes("text") || f.includes("plain")) && isHttpUrl(d)) {
+          if (
+            captureState.inCopyEvent &&
+            (f.includes("text") || f.includes("plain")) &&
+            isHttpUrl(d)
+          ) {
             captureState.lastClipboardText = d.trim();
             captureState.lastClipboardAt = Date.now();
           }

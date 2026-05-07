@@ -14,7 +14,7 @@ class ServerDownloader:
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {}}
-    
+
     RETURN_TYPES = ()
     FUNCTION = "noop"
     CATEGORY = "ServerDownloader"
@@ -67,6 +67,26 @@ async def _delete_task(task_id: str):
         _tasks.pop(task_id, None)
 
 
+@PromptServer.instance.routes.get("/server_downloader/list_types")
+async def list_types(request):
+    """返回 ComfyUI 所有已注册的模型类型目录，供前端动态生成下拉列表。"""
+    try:
+        # folder_names_and_paths 是 dict: {类型名: ([路径列表], [扩展名列表])}
+        all_types = sorted(folder_paths.folder_names_and_paths.keys())
+        # 同时返回 models 根目录路径，供前端参考
+        return web.json_response({
+            "status": "success",
+            "types": all_types,
+            "models_dir": folder_paths.models_dir,
+        })
+    except Exception as e:
+        return web.json_response({
+            "status": "error",
+            "message": str(e),
+            "types": ["checkpoints"],
+        }, status=500)
+
+
 async def _download_worker(task_id: str):
     task = await _get_task(task_id)
     if not task:
@@ -117,13 +137,14 @@ async def _download_worker(task_id: str):
         except Exception:
             pass
 
+
 @PromptServer.instance.routes.post("/server_downloader/download")
 async def handle_download(request):
     try:
         data = await request.json()
         url = data.get("url")
         filename = data.get("filename")
-        model_type = data.get("type", "checkpoints") # Default to checkpoints
+        model_type = data.get("type", "checkpoints")
 
         if not url:
             return web.json_response({"status": "error", "message": "No URL provided"}, status=400)
@@ -146,10 +167,6 @@ async def handle_download(request):
 
         dest_path = os.path.join(target_dir, safe_name)
 
-        # Start download in background or wait? 
-        # For simplicity in this version, we'll wait for the download to start and return a task ID or success
-        # But a real implementation should probably use a background task manager.
-        
         task_id = uuid.uuid4().hex
         created_at = _now()
 
@@ -231,9 +248,9 @@ async def cancel_task(request):
 
     return web.json_response({"status": "success", "message": "Task already finished"})
 
+
 @PromptServer.instance.routes.get("/server_downloader/check_path")
 async def check_path(request):
-    # Helper to see where files will go
     model_type = request.query.get("type", "checkpoints")
     try:
         paths = folder_paths.get_folder_paths(model_type)
