@@ -729,6 +729,8 @@ function inferTypeFromUrl(url) {
   if (/\/unet[\/\?]/.test(lower)) return "unet";
   if (/\/clip[\/\?]/.test(lower)) return "clip";
   if (/\/diffusion[_model]?[\/\?]/.test(lower)) return "diffusion_models";
+  // text_encoders for models like Qwen that need text encoders
+  if (/\/text_encoders?[\/\?]/.test(lower) || lower.includes("/text_encoders/")) return "text_encoders";
   // checkpoints last as most URLs don't have a type prefix
   if (/\/(checkpoints?|models?)[\/\?]/.test(lower) || lower.includes("/ckpt/") || lower.includes("/safetensors")) return "checkpoints";
   return "";
