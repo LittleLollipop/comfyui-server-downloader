@@ -264,28 +264,45 @@ async function promptDownloadDialog({ defaultUrl, defaultFilename, defaultType }
       return row;
     }
 
-    // URL input
+    // ---- Create all elements first ----
+
     const urlInput = document.createElement("input");
     urlInput.type = "text";
     urlInput.value = defaultUrl || "";
     urlInput.placeholder = i18n.urlPlaceholder;
     urlInput.style.cssText = inputStyle;
-    urlInput.addEventListener("input", () => {
-      const v = urlInput.value.trim();
-      if (isHttpUrl(v)) {
-        const fn = sanitizeFilename(extractFilenameFromUrl(v));
-        if (fn && !filenameInput.value.trim()) filenameInput.value = fn;
-      }
-    });
 
-    // Filename input
+    // Filename input row (input + auto-fill button)
+    const filenameRow = document.createElement("div");
+    filenameRow.style.cssText = "display:flex;gap:6px;align-items:center;";
+
     const filenameInput = document.createElement("input");
     filenameInput.type = "text";
     filenameInput.value = defaultFilename || i18n.filenamePlaceholder;
     filenameInput.placeholder = i18n.filenamePlaceholder;
-    filenameInput.style.cssText = inputStyle;
+    filenameInput.style.cssText = inputStyle + ";flex:1;";
 
-    // ---- Type selection area ----
+    const autoFillBtn = document.createElement("button");
+    autoFillBtn.type = "button";
+    autoFillBtn.innerText = "✨ Auto";
+    autoFillBtn.title = "Extract filename & type from URL";
+    autoFillBtn.style.cssText = [
+      "padding:6px 12px",
+      "font-size:12px",
+      "border-radius:4px",
+      "border:1px solid #555",
+      "background:#1a1a1a",
+      "color:#ccc",
+      "cursor:pointer",
+      "white-space:nowrap",
+      "flex-shrink:0",
+    ].join(";");
+
+    filenameRow.appendChild(filenameInput);
+    filenameRow.appendChild(autoFillBtn);
+
+    // Type selection
+    let typeUserEdited = false;
     const typeRow = document.createElement("div");
     typeRow.style.cssText = "margin-bottom:14px;";
 
@@ -294,21 +311,30 @@ async function promptDownloadDialog({ defaultUrl, defaultFilename, defaultType }
     typeLabel.style.cssText = "font-size:12px;color:#aaa;margin-bottom:5px;";
     typeRow.appendChild(typeLabel);
 
-    // Type dropdown
     const typeSelect = document.createElement("select");
     typeSelect.style.cssText = inputStyle + ";cursor:pointer;margin-bottom:6px;";
     typeSelect.title = i18n.dialogTypeHint;
 
-    // Sort alphabetically, put default at top
+    const customInput = document.createElement("input");
+    customInput.type = "text";
+    customInput.placeholder = i18n.dialogCustomTypePlaceholder;
+    customInput.style.cssText = inputStyle + ";display:none;";
+
+    const pathPreview = document.createElement("div");
+    pathPreview.style.cssText = "font-size:11px;color:#666;margin-top:4px;";
+
+    // Sort types: URL-inferred first, then DOM default, then checkpoints, rest alphabetically
     const sortedTypes = [...typesList].sort();
-    // Put defaultType first
-    const preferred = defaultType && sortedTypes.includes(defaultType)
-      ? defaultType
-      : sortedTypes.includes("checkpoints")
-        ? "checkpoints"
-        : sortedTypes[0];
-    const ordered = preferred
-      ? [preferred, ...sortedTypes.filter((t) => t !== preferred)]
+    const urlType = inferTypeFromUrl(defaultUrl);
+    const firstType = urlType && sortedTypes.includes(urlType)
+      ? urlType
+      : defaultType && sortedTypes.includes(defaultType)
+        ? defaultType
+        : sortedTypes.includes("checkpoints")
+          ? "checkpoints"
+          : sortedTypes[0];
+    const ordered = firstType
+      ? [firstType, ...sortedTypes.filter((t) => t !== firstType)]
       : sortedTypes;
 
     ordered.forEach((t) => {
@@ -318,34 +344,27 @@ async function promptDownloadDialog({ defaultUrl, defaultFilename, defaultType }
       typeSelect.appendChild(opt);
     });
 
-    // "Custom type" option
     const customOpt = document.createElement("option");
     customOpt.value = "__custom__";
     customOpt.text = i18n.dialogCustomTypeOption;
     typeSelect.appendChild(customOpt);
 
-    // Custom type input (hidden by default)
-    const customInput = document.createElement("input");
-    customInput.type = "text";
-    customInput.placeholder = i18n.dialogCustomTypePlaceholder;
-    customInput.style.cssText = inputStyle + ";display:none;";
-
-    typeSelect.addEventListener("change", () => {
-      if (typeSelect.value === "__custom__") {
-        customInput.style.display = "";
-        customInput.focus();
-      } else {
-        customInput.style.display = "none";
-        customInput.value = "";
-      }
-    });
-
     typeRow.appendChild(typeSelect);
     typeRow.appendChild(customInput);
+    typeRow.appendChild(pathPreview);
 
-    // Full path preview (updates in real time with selection)
-    const pathPreview = document.createElement("div");
-    pathPreview.style.cssText = "font-size:11px;color:#666;margin-top:4px;";
+    // Error message
+    const errMsg = document.createElement("div");
+    errMsg.style.cssText = "color:#f44336;font-size:12px;min-height:18px;margin-bottom:6px;";
+
+    // ---- Helper functions (defined before listeners that use them) ----
+
+    function selectType(select, type) {
+      const opts = Array.from(select.options);
+      const found = opts.find((o) => o.value === type);
+      if (found) select.value = type;
+    }
+
     function updatePathPreview() {
       let t = typeSelect.value;
       if (t === "__custom__") t = customInput.value.trim();
@@ -355,12 +374,65 @@ async function promptDownloadDialog({ defaultUrl, defaultFilename, defaultType }
         pathPreview.innerText = "";
       }
     }
-    typeSelect.addEventListener("change", updatePathPreview);
+
+    // Track user edits
+    let filenameUserEdited = !!defaultFilename;
+    let urlUserEdited = !!defaultUrl;
+
+    // ---- Attach listeners ----
+
+    urlInput.addEventListener("input", () => {
+      const v = urlInput.value.trim();
+      urlUserEdited = true;
+      if (isHttpUrl(v)) {
+        const suggestedFilename = sanitizeFilename(extractFilenameFromUrl(v));
+        const suggestedType = inferTypeFromUrl(v);
+        if (suggestedFilename && !filenameUserEdited) {
+          filenameInput.value = suggestedFilename;
+        }
+        if (suggestedType && !typeUserEdited) {
+          selectType(typeSelect, suggestedType);
+          updatePathPreview();
+        }
+      }
+    });
+
+    filenameInput.addEventListener("input", () => {
+      filenameUserEdited = true;
+    });
+
+    autoFillBtn.addEventListener("click", () => {
+      const v = urlInput.value.trim();
+      if (!isHttpUrl(v)) {
+        autoFillBtn.style.borderColor = "#f44336";
+        setTimeout(() => { autoFillBtn.style.borderColor = "#555"; }, 800);
+        return;
+      }
+      const fn = sanitizeFilename(extractFilenameFromUrl(v));
+      if (fn) filenameInput.value = fn;
+      const t = inferTypeFromUrl(v);
+      if (t) {
+        selectType(typeSelect, t);
+        updatePathPreview();
+      }
+    });
+
+    typeSelect.addEventListener("change", () => {
+      typeUserEdited = true;
+      if (typeSelect.value === "__custom__") {
+        customInput.style.display = "";
+        customInput.focus();
+      } else {
+        customInput.style.display = "none";
+        customInput.value = "";
+      }
+      updatePathPreview();
+    });
+
     customInput.addEventListener("input", updatePathPreview);
+
     // Initialize preview
     setTimeout(updatePathPreview, 0);
-
-    typeRow.appendChild(pathPreview);
 
     // Error message
     const errMsg = document.createElement("div");
@@ -429,7 +501,7 @@ async function promptDownloadDialog({ defaultUrl, defaultFilename, defaultType }
 
     box.appendChild(title);
     box.appendChild(makeRow(i18n.dialogUrlLabel, urlInput));
-    box.appendChild(makeRow(i18n.dialogFilenameLabel, filenameInput));
+    box.appendChild(makeRow(i18n.dialogFilenameLabel, filenameRow));
     box.appendChild(typeRow);
     box.appendChild(errMsg);
     box.appendChild(btnRow);
@@ -689,16 +761,86 @@ function inferTypeFromDOM(downloadBtn) {
   return "checkpoints";
 }
 
+// ---- Infer model type from URL path ----
+function inferTypeFromUrl(url) {
+  if (!url) return "checkpoints";
+  const lower = url.toLowerCase();
+  // URL path patterns for common model types
+  if (/\/lora[s]?[\/\?]/.test(lower) || lower.includes("/loras/") || lower.includes("/lora/")) return "loras";
+  if (/\/controlnet[s]?[\/\?]/.test(lower) || lower.includes("/controlnet/")) return "controlnet";
+  if (/\/vae[s]?[\/\?]/.test(lower) || lower.includes("/vae/")) return "vae";
+  if (/\/(upscale|upscalers|esrgan|realesrgan)[\/\?]/.test(lower) || lower.includes("/upscale_model/")) return "upscale_models";
+  if (/\/embedding[s]?[\/\?]/.test(lower) || lower.includes("/textual_inversion/") || lower.includes("/embeddings/")) return "embeddings";
+  if (/\/unet[\/\?]/.test(lower)) return "unet";
+  if (/\/clip[\/\?]/.test(lower)) return "clip";
+  if (/\/diffusion[_model]?[\/\?]/.test(lower)) return "diffusion_models";
+  // checkpoints last as most URLs don't have a type prefix
+  if (/\/(checkpoints?|models?)[\/\?]/.test(lower) || lower.includes("/ckpt/") || lower.includes("/safetensors")) return "checkpoints";
+  return "";
+}
+
 function extractFilenameFromUrl(url) {
+  if (!url) return "";
   try {
     const u = new URL(url);
+    // Civitai: https://civitai.com/api/download/models/12345 -> no filename in URL
+    // Civitai direct: https://civitai.com/api/download/models/xxx?filename=xxx.safetensors
     const qName = u.searchParams.get("filename") || u.searchParams.get("name");
     if (qName) return decodeURIComponent(qName);
-    const last = u.pathname.split("/").filter(Boolean).pop() || "";
-    return decodeURIComponent(last);
+
+    // HuggingFace: https://huggingface.co/username/model-name/resolve/main/model.safetensors
+    // Extract "username/model-name" from path segments, skip "resolve", "main", "blob" etc.
+    const segments = u.pathname.split("/").filter(Boolean);
+    const skip = new Set(["resolve", "blob", "raw", "main", "master", "download", "files", "tree"]);
+    const meaningful = segments.filter((s) => !skip.has(s) && !s.match(/^[a-f0-9]{40,}$/i));
+
+    // If URL ends with a filename-like segment, use it
+    const last = meaningful[meaningful.length - 1] || "";
+    if (last && /\.\w+$/.test(last)) {
+      return decodeURIComponent(last);
+    }
+
+    // Otherwise, try to build a name from the model path
+    // e.g. ["username", "model-name"] -> "username__model-name.safetensors"
+    if (meaningful.length >= 2) {
+      const modelPart = meaningful.slice(-2).join("__");
+      // Guess extension from URL host or content-type hint
+      const ext = inferExtensionFromUrl(url);
+      return `${modelPart}.${ext}`;
+    }
+
+    if (meaningful.length === 1) {
+      const modelPart = meaningful[0];
+      const ext = inferExtensionFromUrl(url);
+      return `${modelPart}.${ext}`;
+    }
+
+    return "";
   } catch {
     return "";
   }
+}
+
+// Infer file extension from URL context (host, path hints)
+function inferExtensionFromUrl(url) {
+  const lower = url.toLowerCase();
+  if (lower.includes("huggingface")) {
+    if (lower.includes(".safetensors")) return "safetensors";
+    if (lower.includes(".ckpt") || lower.includes(".pth")) return "ckpt";
+    if (lower.includes(".bin")) return "bin";
+    if (lower.includes(".gguf")) return "gguf";
+    return "safetensors"; // HF default
+  }
+  if (lower.includes("civitai")) {
+    if (lower.includes(".safetensors")) return "safetensors";
+    if (lower.includes(".ckpt")) return "ckpt";
+    return "safetensors"; // Civitai default
+  }
+  if (lower.includes(".safetensors")) return "safetensors";
+  if (lower.includes(".ckpt") || lower.includes(".pt") || lower.includes(".pth")) return "ckpt";
+  if (lower.includes(".gguf")) return "gguf";
+  if (lower.includes(".bin")) return "bin";
+  return "safetensors"; // Safe default
 }
 
 function sanitizeFilename(name) {
