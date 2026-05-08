@@ -46,6 +46,9 @@ const i18n = {
   // URL placeholder
   urlPlaceholder: "https://huggingface.co/... or https://civitai.com/...",
   filenamePlaceholder: "model.safetensors",
+
+  // Auto-fill tooltip
+  autoFillTooltip: "Re-extract filename from URL",
 };
 
 // ---- Model type cache (dynamically fetched from backend) ----
@@ -328,6 +331,128 @@ async function promptDownloadDialog({ defaultUrl, defaultFilename, defaultType }
 
     btnRow.appendChild(cancelBtn);
     btnRow.appendChild(okBtn);
+
+    // ---- Build input elements ----
+    const urlInput = document.createElement("input");
+    urlInput.type = "text";
+    urlInput.value = defaultUrl || "";
+    urlInput.placeholder = "https://...";
+    urlInput.style.cssText = inputStyle;
+
+    // Filename input with auto-fill button
+    const filenameInput = document.createElement("input");
+    filenameInput.type = "text";
+    filenameInput.value = defaultFilename || "";
+    filenameInput.placeholder = "model.safetensors";
+    filenameInput.style.cssText = inputStyle;
+    let filenameUserEdited = false;
+    filenameInput.addEventListener("input", () => { filenameUserEdited = true; });
+
+    const autoBtn = document.createElement("button");
+    autoBtn.innerText = "✨ Auto";
+    autoBtn.style.cssText = [
+      "padding:4px 10px",
+      "font-size:11px",
+      "border-radius:4px",
+      "border:1px solid #555",
+      "background:#333",
+      "color:#ccc",
+      "cursor:pointer",
+      "white-space:nowrap",
+    ].join(";");
+    autoBtn.title = i18n.autoFillTooltip || "Re-extract from URL";
+    autoBtn.addEventListener("click", () => {
+      const url = urlInput.value.trim();
+      const name = extractFilenameFromUrl(url);
+      const ext = inferExtensionFromUrl(url);
+      filenameInput.value = name + (ext && !name.endsWith(ext) ? ext : "");
+      filenameUserEdited = false;
+    });
+
+    const filenameRow = document.createElement("div");
+    filenameRow.style.cssText = "display:flex;gap:6px;";
+    filenameRow.appendChild(filenameInput);
+    filenameRow.appendChild(autoBtn);
+
+    // Type select
+    const typeSelect = document.createElement("select");
+    typeSelect.style.cssText = inputStyle;
+
+    const customTypeVal = defaultType && !typesList.includes(defaultType)
+      ? defaultType
+      : null;
+
+    typesList.forEach((t) => {
+      const opt = document.createElement("option");
+      opt.value = t;
+      opt.text = t;
+      if (t === defaultType) opt.selected = true;
+      if (customTypeVal === t) opt.selected = true;
+      typeSelect.appendChild(opt);
+    });
+
+    // Add custom option if needed
+    if (customTypeVal) {
+      const opt = document.createElement("option");
+      opt.value = "__custom__";
+      opt.text = `Custom: ${customTypeVal}`;
+      opt.selected = true;
+      typeSelect.appendChild(opt);
+    } else {
+      const opt = document.createElement("option");
+      opt.value = "__custom__";
+      opt.text = "➕ Custom...";
+      typeSelect.appendChild(opt);
+    }
+
+    typeSelect.addEventListener("change", () => {
+      customRow.style.display = typeSelect.value === "__custom__" ? "block" : "none";
+    });
+
+    const customInput = document.createElement("input");
+    customInput.type = "text";
+    customInput.placeholder = "my_custom_type";
+    customInput.style.cssText = inputStyle;
+    if (customTypeVal) customInput.value = customTypeVal;
+
+    const customRow = document.createElement("div");
+    customRow.style.cssText = "margin-top:6px;display:none;";
+    customRow.appendChild(customInput);
+
+    const typeRow = document.createElement("div");
+    typeRow.style.cssText = "margin-bottom:14px;";
+    const typeLbl = document.createElement("div");
+    typeLbl.innerText = i18n.dialogTypeLabel;
+    typeLbl.style.cssText = "font-size:12px;color:#aaa;margin-bottom:5px;";
+    typeRow.appendChild(typeLbl);
+    typeRow.appendChild(typeSelect);
+    typeRow.appendChild(customRow);
+
+    // Auto-fill filename when URL changes (if user hasn't manually edited)
+    urlInput.addEventListener("input", () => {
+      if (filenameUserEdited) return;
+      const url = urlInput.value.trim();
+      if (!url) return;
+      // Auto-fill from URL inference
+      const inferredType = inferTypeFromUrl(url);
+      const name = extractFilenameFromUrl(url);
+      const ext = inferExtensionFromUrl(url);
+
+      // Update filename if empty or was auto-filled
+      if (!filenameInput.value || !filenameUserEdited) {
+        filenameInput.value = name + (ext && !name.endsWith(ext) ? ext : "");
+      }
+
+      // Auto-select type if user hasn't manually selected
+      if (inferredType && typeSelect.value !== "__custom__") {
+        for (const opt of typeSelect.options) {
+          if (opt.value === inferredType) {
+            typeSelect.value = inferredType;
+            break;
+          }
+        }
+      }
+    });
 
     box.appendChild(title);
     box.appendChild(makeRow(i18n.dialogUrlLabel, urlInput));
