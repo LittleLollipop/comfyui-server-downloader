@@ -189,7 +189,7 @@ function maybePatchMissingModelsUI(root) {
         const resp = await api.fetchApi("/server_downloader/download", {
           method: "POST",
           body: JSON.stringify({
-            url: result.url,
+            url: normalizeDownloadUrl(result.url),
             filename: result.filename,
             type: result.type,
           }),
@@ -714,6 +714,15 @@ function inferTypeFromDOM(downloadBtn) {
     el = el.parentElement;
   }
   return "checkpoints";
+}
+
+// ---- Normalize HuggingFace URL ----
+// HF "copy link" gives /blob/main/... which is NOT a direct download URL.
+// Convert to /resolve/main/... which actually serves the file.
+function normalizeDownloadUrl(url) {
+  if (typeof url !== "string") return url;
+  // blob/ → resolve/
+  return url.replace(/\/blob\//i, "/resolve/");
 }
 
 // ---- Infer model type from URL path ----
